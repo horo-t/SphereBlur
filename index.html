@@ -1,0 +1,1064 @@
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="mobile-web-app-capable" content="yes">
+    <link rel="manifest" href="manifest.json">
+    <meta name="description" content="Sphere Blur">
+    <meta name="keywords" content="Sphere,Blur,Theta,360,image,editor,photo">
+    <meta name="viewport" content="initial-scale=1.0, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+    <title>Sphere Blur</title>
+<style>
+body {
+  background-color: #000000;
+  margin: 0px;
+  overflow: hidden;
+}
+#container {
+  position: absolute;
+  padding: 0;
+  border: 0;
+  margin: 0;
+  top: 40px;
+}
+body {
+  background-color: #000000;
+  margin: 0px;
+  overflow: hidden;
+}
+#container {
+  position: absolute;
+  top: 40px;
+  padding: 0;
+  border: 0;
+  margin: 0;
+}
+#menu {
+    outline: none;
+    position: absolute;
+    top:0px;
+    width: 100%;
+    height: 40px;
+    left: 0px;
+    padding: 0;
+    border: 0;
+    margin: 0;
+    background-color: #eee;
+}
+.button {
+    outline: none;
+    position: absolute;
+    top: 0;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 0;
+    margin: 8px;
+    background-size: 100%;
+}
+.button:disabled {
+    opacity: 0.1;
+}
+.button:active {
+    opacity: 0.6;
+}
+.button-unchecked {
+    opacity: 0.4;
+}
+#open-button {
+    left: 0px;
+    background: url(img/ic_photo_black_24px.svg) left top no-repeat;
+}
+#edit-mode-button {
+    left: 40px;
+}
+#save-button {
+    left: 80px;
+    background: url(img/ic_save_black_24px.svg) left top no-repeat;
+}
+#fileInput {
+    width: 0;
+    height: 0;
+}
+.edit-rotate {
+    background: url(img/ic_loop_black_24px.svg) left top no-repeat;
+}
+.edit-small-pt {
+    background: url(img/4pt.svg) left top no-repeat;
+}
+.edit-medium-pt {
+    background: url(img/7pt.svg) left top no-repeat;
+}
+.edit-large-pt {
+    background: url(img/10pt.svg) left top no-repeat;
+}
+</style>
+<script src="./jpeg_encoder_basic.js"></script>
+<script>
+var view;
+var MirrorView = function() {
+  this._MENU_HEIGHT = 40;
+  this._lon = 0;
+  this._lat = 0;
+  this._ballSize = 0.05;
+  this._scale = 3.0;
+  this._mouseTracking = false;
+  this._mouseDownPosX = 0;
+  this._mouseDownPosY = 0;
+  this._mouseDownLon = 0;
+  this._mouseDownLat = 0;
+  this._lastTouches = [];
+  this._doubleTouchStartLat = 0;
+  this._doubleTouchStartLon = 0;
+  this._doubleTouchStartPos = 0;
+  this._needsUpdate = true;
+  this._PI = 3.1415925358979;
+  this._PI2 = 6.2831850718
+};
+MirrorView.prototype = {
+  initialize: function(menuController) {
+    this._menuController = menuController;
+    this._mode = this._menuController.getEditMode();
+    this._menuController.setView(this);
+
+    this._canvas = document.createElement('canvas');
+  	this._canvas.width  = window.innerWidth;
+  	this._canvas.height = window.innerHeight - this._MENU_HEIGHT;
+    var container = document.getElementById('container');
+    window.addEventListener('resize', this._onWindowResize.bind(this), false);
+    container.addEventListener('mousedown', this._onMouseDown.bind(this), false);
+    container.addEventListener('mousemove', this._onMouseMove.bind(this), false);
+    container.addEventListener('mouseup', this._onMouseUp.bind(this), false);
+    container.addEventListener('mousewheel', this._onMouseWheel.bind(this), false);
+    container.addEventListener('DOMMouseScroll', this._onMouseWheel.bind(this), false);
+    container.addEventListener('touchstart', this._onTouchStart.bind(this), false);
+    container.addEventListener('touchmove', this._onTouchMove.bind(this), false);
+    container.addEventListener('touchend', this._onTouchEnd.bind(this), false);
+
+    container.appendChild(this._canvas);
+    this._gl = this._canvas.getContext('webgl') || this._canvas.getContext('experimental-webgl');
+    this._gl.viewport(0, 0, this._gl.drawingBufferWidth, this._gl.drawingBufferHeight);
+    var buffer = this._gl.createBuffer();
+    this._gl.bindBuffer(this._gl.ARRAY_BUFFER, buffer);
+    this._gl.bufferData(
+      this._gl.ARRAY_BUFFER,
+      new Float32Array([-1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0,  1.0]),
+      this._gl.STATIC_DRAW);
+
+    var vertexShaderForFrameBuffer = this._gl.createShader(this._gl.VERTEX_SHADER);
+    this._gl.shaderSource(vertexShaderForFrameBuffer, document.getElementById("vertex-shader-for-frame-buffer").text);
+    this._gl.compileShader(vertexShaderForFrameBuffer);
+
+    var fragmentShaderForFrameBuffer = this._gl.createShader(this._gl.FRAGMENT_SHADER);
+    this._gl.shaderSource(fragmentShaderForFrameBuffer, document.getElementById("fragment-shader-for-frame-buffer").text);
+    this._gl.compileShader(fragmentShaderForFrameBuffer);
+    this._programForFrameBuffer = this._gl.createProgram();
+    this._gl.attachShader(this._programForFrameBuffer, vertexShaderForFrameBuffer);
+    this._gl.attachShader(this._programForFrameBuffer, fragmentShaderForFrameBuffer);
+    this._gl.linkProgram(this._programForFrameBuffer);
+    this._gl.useProgram(this._programForFrameBuffer);
+    this._inputVector_loc = this._gl.getUniformLocation(this._programForFrameBuffer, 'inputVector');
+    this._frameBufferSize_loc = this._gl.getUniformLocation(this._programForFrameBuffer, 'frameBufferSize');
+    this._pointSize_loc = this._gl.getUniformLocation(this._programForFrameBuffer, 'pointSize');
+    this._cosTableTexture_loc = this._gl.getUniformLocation(this._programForFrameBuffer, 'cosTableTexture');
+    this._ySize_loc = this._gl.getUniformLocation(this._programForFrameBuffer, 'ySize');
+    this._yBase_loc = this._gl.getUniformLocation(this._programForFrameBuffer, 'yBase');
+    this._cosTableTexture = this._createCosTableTexture(4096);
+
+    this._frameBuffer = this._createFrameBuffer(2048, 1024);
+    this._frameBufferForEdit0 = this._createFrameBuffer(4096, 2048);
+    this._frameBufferForEdit1 = this._createFrameBuffer(4096, 2048);
+
+    var vertexShader = this._gl.createShader(this._gl.VERTEX_SHADER);
+    this._gl.shaderSource(vertexShader, document.getElementById("vertex-shader").text);
+    this._gl.compileShader(vertexShader);
+    var fragmentShader = this._gl.createShader(this._gl.FRAGMENT_SHADER);
+    this._gl.shaderSource(fragmentShader, document.getElementById("fragment-shader").text);
+    this._gl.compileShader(fragmentShader);
+    this._program = this._gl.createProgram();
+    this._gl.attachShader(this._program, vertexShader);
+    this._gl.attachShader(this._program, fragmentShader);
+    this._gl.linkProgram(this._program);
+    this._gl.useProgram(this._program);
+
+    var positionLocation = this._gl.getAttribLocation(this._program, "pos");
+    this._gl.enableVertexAttribArray(positionLocation);
+    this._gl.vertexAttribPointer(positionLocation, 2, this._gl.FLOAT, false, 0, 0);
+
+    this._camRot_loc = this._gl.getUniformLocation(this._program, 'camRot');
+    this._ballSize_loc = this._gl.getUniformLocation(this._program, 'ballSize');
+    this._scale_loc = this._gl.getUniformLocation(this._program, 'scale');
+    this._texture0_loc = this._gl.getUniformLocation(this._program, 'texture0');
+    this._texture1_loc = this._gl.getUniformLocation(this._program, 'texture1');
+    this._dispSize_loc = this._gl.getUniformLocation(this._program, 'dispSize');
+    this._gl.uniform2f(this._dispSize_loc, this._canvas.width, this._canvas.height);
+
+    var blurFragmentShader = this._gl.createShader(this._gl.FRAGMENT_SHADER);
+    this._gl.shaderSource(blurFragmentShader, document.getElementById("blur-fragment-shader").text);
+    this._gl.compileShader(blurFragmentShader);
+    this._blurProgram = this._gl.createProgram();
+    vertexShader = this._gl.createShader(this._gl.VERTEX_SHADER);
+    this._gl.shaderSource(vertexShader, document.getElementById("vertex-shader").text);
+    this._gl.compileShader(vertexShader);
+    this._gl.attachShader(this._blurProgram, vertexShader);
+    this._gl.attachShader(this._blurProgram, blurFragmentShader);
+    this._gl.linkProgram(this._blurProgram);
+    this._gl.useProgram(this._blurProgram);
+    this._blurTextureOrg_loc = this._gl.getUniformLocation(this._blurProgram, 'blurTextureOrg');
+    this._blurFilterTexture_loc = this._gl.getUniformLocation(this._blurProgram, 'blurFilterTexture');
+    this._blurFrameBufferSize_loc = this._gl.getUniformLocation(this._blurProgram, 'blurFrameBufferSize');
+    this._blurMode_loc = this._gl.getUniformLocation(this._blurProgram, 'blurMode');
+    this._gl.uniform2f(this._blurFrameBufferSize_loc, this._frameBufferForEdit0.width, this._frameBufferForEdit0.height);
+
+  	this._render();
+  },
+  loadImage: function(img, poseInfo) {
+    this._needsUpdate = true;
+    this._poseInfo = poseInfo;
+    if (!isPowOfTwo(img.width) || !isPowOfTwo(img.height)) {
+      var c = document.createElement('canvas');
+      c.width = nearestPowOfTwo(img.width);
+      c.height = nearestPowOfTwo(img.height);
+      var cxt = c.getContext('2d');
+      cxt.drawImage(img, 0, 0, c.width, c.height);
+      img = c;
+    }
+    if (this._texture) {
+      this._gl.deleteTexture(this._texture);
+    }
+    this._texture = this._gl.createTexture();
+    this._gl.bindTexture(this._gl.TEXTURE_2D, this._texture);
+    this._gl.texImage2D(this._gl.TEXTURE_2D, 0, this._gl.RGBA, this._gl.RGBA, this._gl.UNSIGNED_BYTE, img);
+    this._gl.generateMipmap(this._gl.TEXTURE_2D);
+    this._gl.texParameteri(this._gl.TEXTURE_2D, this._gl.TEXTURE_MIN_FILTER, this._gl.LINEAR);
+    this._gl.texParameteri(this._gl.TEXTURE_2D, this._gl.TEXTURE_MAG_FILTER, this._gl.LINEAR);
+  	this._gl.texParameteri(this._gl.TEXTURE_2D, this._gl.TEXTURE_WRAP_S, this._gl.REPEAT);
+  	this._gl.texParameteri(this._gl.TEXTURE_2D, this._gl.TEXTURE_WRAP_T, this._gl.REPEAT);
+    this._gl.bindTexture(this._gl.TEXTURE_2D, null);
+    this._executeBlureFilter(this._texture, null, this._frameBufferForEdit0.f, 0);
+  },
+  setEditMode: function(mode) {
+    this._mode = mode;
+  },
+  _getBufferPixelsForSave: function() {
+    var pixels = new Uint8Array(this._frameBufferForEdit0.width * this._frameBufferForEdit0.height * 4);
+    this._gl.bindFramebuffer(this._gl.FRAMEBUFFER, this._frameBufferForEdit0.f);
+    this._gl.readPixels(0, 0, this._frameBufferForEdit0.width, this._frameBufferForEdit0.height, this._gl.RGBA, this._gl.UNSIGNED_BYTE, pixels);
+    this._gl.bindFramebuffer(this._gl.FRAMEBUFFER, null);
+    return pixels;
+  },
+  _createXMP: function() {
+    var w = this._frameBufferForEdit0.width;
+    var h = this._frameBufferForEdit0.height;
+    var heading = 0;
+    var pitch = 0;
+    var roll = 0;
+    if (this._poseInfo) {
+      heading = this._poseInfo.heading;
+      pitch = this._poseInfo.pitch;
+      roll = this._poseInfo.roll;
+    }
+    var xmp =
+      '<?xpacket begin="ï»¿" id="W5M0MpCehiHzreSzNTczkc9d"?>' +
+      '<x:xmpmeta xmlns:x="adobe:ns:meta/" xmptk="Sphere Blur">' +
+        '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">' +
+          '<rdf:Description rdf:about="" xmlns:GPano="http://ns.google.com/photos/1.0/panorama/">' +
+          '<GPano:ProjectionType>equirectangular</GPano:ProjectionType>' +
+          '<GPano:UsePanoramaViewer>True</GPano:UsePanoramaViewer>' +
+          '<GPano:CroppedAreaImageWidthPixels>' + w + '</GPano:CroppedAreaImageWidthPixels>' +
+          '<GPano:CroppedAreaImageHeightPixels>' + h + '</GPano:CroppedAreaImageHeightPixels>' +
+          '<GPano:FullPanoWidthPixels>' + w + '</GPano:FullPanoWidthPixels>' +
+          '<GPano:FullPanoHeightPixels>' + h + '</GPano:FullPanoHeightPixels>' +
+          '<GPano:CroppedAreaLeftPixels>0</GPano:CroppedAreaLeftPixels>' +
+          '<GPano:CroppedAreaTopPixels>0</GPano:CroppedAreaTopPixels>' +
+          '<GPano:PoseHeadingDegrees>' + heading + '</GPano:PoseHeadingDegrees>' +
+          '<GPano:PosePitchDegrees>' + pitch + '</GPano:PosePitchDegrees>' +
+          '<GPano:PoseRollDegrees>' + roll + '</GPano:PoseRollDegrees>' +
+          '</rdf:Description>' +
+        '</rdf:RDF>' +
+      '</x:xmpmeta>' +
+      '<?xpacket end="r"?>';
+    return xmp;
+  },
+  save: function() {
+    var pixels = this._getBufferPixelsForSave();
+    var jpegEnc = new JPEGEncoder();
+    var jpegUri = jpegEnc.encode({
+      width: this._frameBufferForEdit0.width,
+      height: this._frameBufferForEdit0.height,
+      data: pixels,
+      xmp: this._createXMP()
+    }, 70);
+    var type = 'image/jpeg';
+    var a = document.createElement('a');
+    a.href = jpegUri;
+    document.body.appendChild(a);
+    a.download = "image.jpg";
+    a.click();
+    document.body.removeChild(a);
+  },
+  _createCosTableTexture: function(width) {
+    var canvas = document.createElement("canvas");
+    document.body.appendChild(canvas);
+    canvas.width = width;
+    canvas.height = 1;
+    var context = canvas.getContext("2d");
+    var image = context.createImageData(width, 1);
+    image[0] = image[1] = image[2] = image[3] = 255;
+    for (var i = 1; i < width; i += 1) {
+      var index = i * 4;
+      var tmp0 = Math.cos(i*this._PI/2/width) * 256;
+      var tmp1 = Math.floor(tmp0);
+      image.data[index] = tmp1;
+      tmp0 = (tmp0 - tmp1) * 256;
+      tmp1 = Math.floor(tmp0);
+      image.data[index + 1] = tmp1;
+      tmp0 = (tmp0 - tmp1) * 256;
+      tmp1 = Math.floor(tmp0);
+      image.data[index + 2] = tmp1;
+      image.data[index + 3] = 255;
+    }
+    context.putImageData(image, 0, 0);
+    var texture = this._gl.createTexture();
+    this._gl.bindTexture(this._gl.TEXTURE_2D, texture);
+    this._gl.texImage2D(this._gl.TEXTURE_2D, 0, this._gl.RGBA, this._gl.RGBA, this._gl.UNSIGNED_BYTE, canvas);
+    this._gl.generateMipmap(this._gl.TEXTURE_2D);
+    this._gl.texParameteri(this._gl.TEXTURE_2D, this._gl.TEXTURE_MIN_FILTER, this._gl.LINEAR);
+    this._gl.texParameteri(this._gl.TEXTURE_2D, this._gl.TEXTURE_MAG_FILTER, this._gl.LINEAR);
+    this._gl.texParameteri(this._gl.TEXTURE_2D, this._gl.TEXTURE_WRAP_S, this._gl.CLAMP_TO_EDGE);
+    this._gl.texParameteri(this._gl.TEXTURE_2D, this._gl.TEXTURE_WRAP_T, this._gl.CLAMP_TO_EDGE);
+    this._gl.bindTexture(this._gl.TEXTURE_2D, null);
+    return texture;
+  },
+  _createFrameBuffer: function (width, height){
+    var frameBuffer = this._gl.createFramebuffer();
+    this._gl.bindFramebuffer(this._gl.FRAMEBUFFER, frameBuffer);
+    var renderBuffer = this._gl.createRenderbuffer();
+    this._gl.bindRenderbuffer(this._gl.RENDERBUFFER, renderBuffer);
+    var texture = this._gl.createTexture();
+    this._gl.bindTexture(this._gl.TEXTURE_2D, texture);
+    this._gl.texImage2D(this._gl.TEXTURE_2D, 0, this._gl.RGBA, width, height, 0, this._gl.RGBA, this._gl.UNSIGNED_BYTE, null);
+    this._gl.texParameteri(this._gl.TEXTURE_2D, this._gl.TEXTURE_MAG_FILTER, this._gl.LINEAR);
+    this._gl.texParameteri(this._gl.TEXTURE_2D, this._gl.TEXTURE_MIN_FILTER, this._gl.LINEAR);
+    this._gl.framebufferTexture2D(this._gl.FRAMEBUFFER, this._gl.COLOR_ATTACHMENT0, this._gl.TEXTURE_2D, texture, 0);
+    this._gl.clearColor(0.0, 0.0, 0.0, 0.0);
+    this._gl.clear(this._gl.COLOR_BUFFER_BIT);
+    this._gl.bindTexture(this._gl.TEXTURE_2D, null);
+    this._gl.bindRenderbuffer(this._gl.RENDERBUFFER, null);
+    this._gl.bindFramebuffer(this._gl.FRAMEBUFFER, null);
+    return {f : frameBuffer, t : texture, width: width, height: height};
+  },
+  _drawPoint: function(x, y) {
+    var poinrRotVec = this._getPointVector(x, y);
+    if (this._mode == 'small-pt') {
+      this._drawFramebufferPoint(poinrRotVec, 0.02);
+    } else if (this._mode == 'medium-pt') {
+      this._drawFramebufferPoint(poinrRotVec, 0.05);
+    } else if (this._mode == 'large-pt') {
+      this._drawFramebufferPoint(poinrRotVec, 0.15);
+    }
+  },
+  _clearFrameBuffer: function() {
+    this._gl.bindFramebuffer(this._gl.FRAMEBUFFER, this._frameBuffer.f);
+    this._gl.clearColor(0.0, 0.0, 0.0, 0.0);
+    this._gl.clear(this._gl.COLOR_BUFFER_BIT);
+    this._gl.bindFramebuffer(this._gl.FRAMEBUFFER, null);
+  },
+  _onMouseDown: function(event) {
+    this._needsUpdate = true;
+    this._mouseTracking = true;
+    event.preventDefault();
+    this._lastDrawPoint = {x:event.clientX , y: event.clientY - this._MENU_HEIGHT};
+    this._drawPoint(event.clientX, event.clientY - this._MENU_HEIGHT);
+    this._mouseDownPosX = event.clientX;
+    this._mouseDownPosY = event.clientY - this._MENU_HEIGHT;
+    this._mouseDownLon = this._lon;
+    this._mouseDownLat = this._lat;
+  },
+  _onMouseMove: function(event) {
+    this._needsUpdate = true;
+    if (this._mouseTracking && this._mode != 'rotate') {
+      if (!this._lastDrawPoint) {
+        this._drawPoint(event.clientX, event.clientY - this._MENU_HEIGHT);
+      } else {
+        var drawPoint = {x:event.clientX , y: event.clientY - this._MENU_HEIGHT};
+        var xDiff = Math.abs(drawPoint.x - this._lastDrawPoint.x);
+        var yDiff = Math.abs(drawPoint.y - this._lastDrawPoint.y);
+        var STEP_COUNT = Math.min(10, Math.max(xDiff, yDiff));
+        for (var i = 1; i <= STEP_COUNT; ++i) {
+          this._drawPoint((this._lastDrawPoint.x * (STEP_COUNT - i) + drawPoint.x * i) / STEP_COUNT,
+                          (this._lastDrawPoint.y * (STEP_COUNT - i) + drawPoint.y * i) / STEP_COUNT);
+        }
+      }
+      this._lastDrawPoint = {x:event.clientX , y: event.clientY - this._MENU_HEIGHT};
+    }
+    if (!this._mouseTracking || (this._mode != 'rotate'))
+      return;
+    this._lon = (event.clientX - this._mouseDownPosX) * 0.2 + this._mouseDownLon;
+    this._lat = (event.clientY - this._MENU_HEIGHT - this._mouseDownPosY) * 0.2 + this._mouseDownLat;
+  },
+  _onMouseUp: function(event) {
+    this._needsUpdate = true;
+    this._lastDrawPoint = undefined;
+    this._executeBlureFilter(this._frameBufferForEdit0.t, null, this._frameBufferForEdit1.f, 1);
+    this._executeBlureFilter(this._frameBufferForEdit1.t, this._frameBuffer.t, this._frameBufferForEdit0.f, 2);
+    this._clearFrameBuffer();
+    this._mouseTracking = false;
+  },
+  _setScale: function(scale) {
+    if (scale > 30)
+      scale = 30;
+    if (scale < 1.5)
+      scale = 1.5;
+    this._scale = scale;
+  },
+  _onMouseWheel: function(event) {
+    this._needsUpdate = true;
+    if (event.wheelDeltaY) { // WebKit
+      this._setScale(this._scale - event.wheelDeltaY * 0.01);
+    } else if (event.wheelDelta) { // Opera / Explorer 9
+      this._setScale(this._scale - event.wheelDelta * 0.01);
+    } else if (event.detail) { // Firefox
+      this._setScale(this._scale + event.detail * 0.2);
+    }
+  },
+  _updateLastTouches: function(touches) {
+    this._lastTouches = [];
+    for (var i = 0; i < touches.length; ++i) {
+      this._lastTouches.push({
+          clientX: touches[i].clientX,
+          clientY: touches[i].clientY
+        });
+    }
+  },
+  _touchDist: function(touch1, touch2) {
+    var xDiff = touch1.clientX - touch2.clientX;
+    var yDiff = touch1.clientY - touch2.clientY;
+    return Math.sqrt(xDiff * xDiff + yDiff * yDiff);
+  },
+  _touchCenter: function(touch1, touch2) {
+    return {
+      clientX: (touch1.clientX + touch2.clientX) / 2,
+      clientY: (touch1.clientY + touch2.clientY) / 2
+    };
+  },
+  _touchDiff: function(touch1, touch2) {
+    return {
+      clientX: touch1.clientX - touch2.clientX,
+      clientY: touch1.clientY - touch2.clientY
+    };
+  },
+  _onTouchStart: function(event) {
+    this._needsUpdate = true;
+    event.preventDefault();
+    this._mouseTracking = true;
+    if (this._lastTouches.length < 2 && event.touches.length == 2) {
+      this._doubleTouchStartPos = this._touchCenter(event.touches[0], event.touches[1]);
+      this._doubleTouchStartLon = this._lon;
+      this._doubleTouchStartLat = this._lat;
+    }
+    if (this._mode != 'rotate') {
+      if (this._lastTouches.length == 0 && event.touches.length == 1) {
+        this._drawing = true;
+        this._drawPoint(event.touches[0].clientX, event.touches[0].clientY - this._MENU_HEIGHT);
+        this._lastDrawPoint = {x:event.touches[0].clientX , y: event.touches[0].clientY - this._MENU_HEIGHT};
+      }
+    }
+    this._updateLastTouches(event.touches);
+  },
+  _onTouchMove: function(event) {
+    this._needsUpdate = true;
+    if (event.touches.length != 1) {
+      this._drawing = false;
+    }
+    if (this._lastTouches.length == 2 && event.touches.length == 2) {
+      this._setScale(this._scale * this._touchDist(event.touches[0], event.touches[1]) / this._touchDist(this._lastTouches[0], this._lastTouches[1]));
+      var diff = this._touchDiff(this._touchCenter(event.touches[0], event.touches[1]), this._doubleTouchStartPos);
+      this._lon = diff.clientX * 0.2 + this._doubleTouchStartLon;
+      this._lat = diff.clientY * 0.2 + this._doubleTouchStartLat;
+      this._clearFrameBuffer();
+    }
+    if (this._lastTouches.length == 1 && event.touches.length == 1) {
+      if (this._mode == 'rotate') {
+        var diff = this._touchDiff(event.touches[0], this._lastTouches[0]);
+        this._lon = diff.clientX * 0.2 + this._lon;
+        this._lat = diff.clientY * 0.2 + this._lat;
+      } else if (this._drawing) {
+        if (!this._lastDrawPoint) {
+          this._drawPoint(event.touches[0].clientX, event.touches[0].clientY - this._MENU_HEIGHT);
+        } else {
+          var drawPoint = {x:event.touches[0].clientX , y: event.touches[0].clientY - this._MENU_HEIGHT};
+          var xDiff = Math.abs(drawPoint.x - this._lastDrawPoint.x);
+          var yDiff = Math.abs(drawPoint.y - this._lastDrawPoint.y);
+          var STEP_COUNT = Math.min(8, Math.max(xDiff, yDiff));
+          for (var i = 1; i <= STEP_COUNT; ++i) {
+            this._drawPoint((this._lastDrawPoint.x * (STEP_COUNT - i) + drawPoint.x * i) / STEP_COUNT,
+                            (this._lastDrawPoint.y * (STEP_COUNT - i) + drawPoint.y * i) / STEP_COUNT);
+          }
+        }
+        this._lastDrawPoint = {x:event.touches[0].clientX , y: event.touches[0].clientY - this._MENU_HEIGHT};
+      }
+    }
+    this._updateLastTouches(event.touches);
+  },
+  _onTouchEnd: function(event) {
+    this._needsUpdate = true;
+    this._lastDrawPoint = undefined;
+    if (event.touches.length == 0 && this._drawing) {
+      this._mouseTracking = false;
+      this._drawing = false;
+
+      this._executeBlureFilter(this._frameBufferForEdit0.t, null, this._frameBufferForEdit1.f, 1);
+      this._executeBlureFilter(this._frameBufferForEdit1.t, this._frameBuffer.t, this._frameBufferForEdit0.f, 2);
+      this._clearFrameBuffer();
+    }
+    this._updateLastTouches(event.touches);
+  },
+  _onWindowResize: function() {
+    this._canvas.width  = window.innerWidth;
+    this._canvas.height = window.innerHeight - this._MENU_HEIGHT;
+    this._needsUpdate = true;
+  },
+  _drawFramebufferPoint: function(pointRotVector, size) {
+    this._gl.enable(this._gl.BLEND);
+    this._gl.blendFunc(this._gl.ONE, this._gl.ONE);
+    this._gl.bindFramebuffer(this._gl.FRAMEBUFFER, this._frameBuffer.f);
+    this._gl.useProgram(this._programForFrameBuffer);
+    this._gl.uniform3f(this._inputVector_loc, pointRotVector.x, pointRotVector.y, pointRotVector.z);
+    this._gl.uniform2f(this._frameBufferSize_loc, this._frameBuffer.width, this._frameBuffer.height);
+    this._gl.uniform1f(this._pointSize_loc, size);
+    this._gl.activeTexture(this._gl.TEXTURE0);
+    this._gl.bindTexture(this._gl.TEXTURE_2D, this._cosTableTexture);
+    this._gl.uniform1i(this._cosTableTexture_loc, 0);
+    this._gl.viewport(0, 0, this._frameBuffer.width, this._frameBuffer.height);
+    var lat = -Math.atan2(pointRotVector.y,this._length2({x: pointRotVector.x, y: pointRotVector.z}));
+    this._gl.uniform1f(this._ySize_loc, Math.atan(size) * 2.0 / this._PI);
+    this._gl.uniform1f(this._yBase_loc, lat  * 2.0 / this._PI);
+    this._gl.drawArrays(this._gl.TRIANGLES, 0, 6);
+    this._gl.bindFramebuffer(this._gl.FRAMEBUFFER, null);
+    this._gl.disable(this._gl.BLEND);
+  },
+  _executeBlureFilter: function(fromTexture, filterTexture, toFrame, mode) {
+    this._gl.bindFramebuffer(this._gl.FRAMEBUFFER, toFrame);
+    this._gl.useProgram(this._blurProgram);
+    this._gl.activeTexture(this._gl.TEXTURE0);
+    this._gl.bindTexture(this._gl.TEXTURE_2D, fromTexture);
+    if (mode == 2) {
+      this._gl.enable(this._gl.BLEND);
+      this._gl.blendFunc(this._gl.SRC_ALPHA, this._gl.ONE_MINUS_SRC_ALPHA);
+    }
+    this._gl.uniform1i(this._blurTextureOrg_loc, 0);
+    if (filterTexture) {
+      this._gl.activeTexture(this._gl.TEXTURE1);
+      this._gl.bindTexture(this._gl.TEXTURE_2D, filterTexture);
+      this._gl.uniform1i(this._blurFilterTexture_loc, 1);
+    }
+    this._gl.uniform1i(this._blurMode_loc, mode);
+    this._gl.viewport(0, 0, this._frameBufferForEdit0.width, this._frameBufferForEdit0.height);
+    this._gl.drawArrays(this._gl.TRIANGLES, 0, 6);
+    if (mode == 2) {
+      this._gl.disable(this._gl.BLEND);
+    }
+    this._gl.bindFramebuffer(this._gl.FRAMEBUFFER, null);
+  },
+  _length2: function(vec) {
+    return Math.sqrt(vec.x * vec.x + vec.y * vec.y);
+  },
+  _normalize2: function(vec) {
+    if (vec.x == 0.0 && vec.y == 0.0)
+      return vec;
+    var len = this._length2(vec);
+    return {x: vec.x / len, y: vec.y / len};
+  },
+  _length3: function(vec) {
+    return Math.sqrt(vec.x * vec.x + vec.y * vec.y + vec.z * vec.z);
+  },
+  _normalize3: function(vec) {
+    if (vec.x == 0.0 && vec.y == 0.0 && vec.z == 0.0)
+      return vec;
+    var len = this._length3(vec);
+    return {x: vec.x / len, y: vec.y / len, z: vec.z / len};
+  },
+  _rotateX: function(s, c, p) {
+    return {x: p.x, y: c * p.y - s * p.z, z: s * p.y + c * p.z};
+  },
+  _rotateY: function(s, c, p) {
+    return {x: c * p.x + s * p.z, y: p.y, z: - s * p.x + c * p.z};
+  },
+  _rotateZ: function(s, c, p) {
+    return {x: c * p.x - s * p.y, y: s * p.x+ c * p.y, z: p.z};
+  },
+  _dot: function(v0, v1) {
+    return v0.x * v1.x + v0.y * v1.y + v0.z * v1.z;
+  },
+  _multiply4m: function(m1, m2) {
+    var m100 = m1[0], m101 = m1[1], m102 = m1[2], m103 = m1[3];
+    var m110 = m1[4], m111 = m1[5], m112 = m1[6], m113 = m1[7];
+    var m120 = m1[8], m121 = m1[9], m122 = m1[10], m123 = m1[11];
+    var m130 = m1[12], m131 = m1[13], m132 = m1[14], m133 = m1[15];
+
+    var m200 = m2[0], m201 = m2[1], m202 = m2[2], m203 = m2[3];
+    var m210 = m2[4], m211 = m2[5], m212 = m2[6], m213 = m2[7];
+    var m220 = m2[8], m221 = m2[9], m222 = m2[10], m223 = m2[11];
+    var m230 = m2[12], m231 = m2[13], m232 = m2[14], m233 = m2[15];
+    return [
+      m200*m100 + m201*m110 + m202*m120 + m203*m130,
+      m200*m101 + m201*m111 + m202*m121 + m203*m131,
+      m200*m102 + m201*m112 + m202*m122 + m203*m132,
+      m200*m103 + m201*m113 + m202*m123 + m203*m133,
+      m210*m100 + m211*m110 + m212*m120 + m213*m130,
+      m210*m101 + m211*m111 + m212*m121 + m213*m131,
+      m210*m102 + m211*m112 + m212*m122 + m213*m132,
+      m210*m103 + m211*m113 + m212*m123 + m213*m133,
+      m220*m100 + m221*m110 + m222*m120 + m223*m130,
+      m220*m101 + m221*m111 + m222*m121 + m223*m131,
+      m220*m102 + m221*m112 + m222*m122 + m223*m132,
+      m220*m103 + m221*m113 + m222*m123 + m223*m133,
+      m230*m100 + m231*m110 + m232*m120 + m233*m130,
+      m230*m101 + m231*m111 + m232*m121 + m233*m131,
+      m230*m102 + m231*m112 + m232*m122 + m233*m132,
+      m230*m103 + m231*m113 + m232*m123 + m233*m133];
+  },
+  _rotateX4m: function(a) {
+    var c = Math.cos(a * this._PI / 180.0), s = Math.sin(a * this._PI / 180.0);
+    return [1, 0, 0, 0,  0, c, -s, 0,  0, s, c, 0,  0, 0, 0, 1];
+  },
+  _rotateY4m: function(a) {
+    var c = Math.cos(a * this._PI / 180.0), s = Math.sin(a * this._PI / 180.0);
+    return [c, 0, s, 0,  0, 1, 0, 0,  -s, 0, c, 0,  0, 0, 0, 1];
+  },
+  _rotateZ4m: function(a) {
+    var c = Math.cos(a * this._PI / 180.0), s = Math.sin(a * this._PI / 180.0);
+    return [c, -s, 0, 0,  s, c, 0, 0,  0, 0, 1, 0,  0, 0, 0, 1];
+  },
+  _multiply4mv: function(m, v) {
+    var x = v.x, y = v.y, z = v.z;
+    return {
+      x: x * m[0] + y * m[4] + z * m[8] ,
+      y: x * m[1] + y * m[5] + z * m[9] ,
+      z: x * m[2] + y * m[6] + z * m[10]};
+  },
+  _reflect: function(i, n) {
+    var d = this._dot(n, i);
+    return {
+      x: i.x - 2.0 * d * n.x,
+      y: i.y - 2.0 * d * n.y,
+      z: i.z - 2.0 * d * n.z};
+  },
+  _getPointVector: function(x, y) {
+    var v = {x: (x - 0.5 * this._canvas.width) / (this._canvas.height * this._scale),
+             y: (-y + 0.5 * this._canvas.height) / (this._canvas.height * this._scale)};
+    var v2 = v.x * v.x + v.y * v.y;
+    if (v2 > this._ballSize / (1.0 - this._ballSize)) {
+      return {x: 0.0, y: 0.0, z: 0.0};
+    }
+    var camRotMat = this._getCamRotMat();
+    var v_size = Math.sqrt(v2);
+    var tmp = Math.sqrt(this._ballSize + this._ballSize * v2 - v2);
+    var normal_pos = this._normalize2(v);
+    var normal_vector = this._normalize3({x: v_size * (1.0 - tmp), y:0.0, z: tmp + v2});
+    var normal_rotate_vector = this._rotateZ(normal_pos.y, normal_pos.x, normal_vector);
+    var input_vector = {x: v.x, y: v.y, z: -1.0};
+    var reflect_vector = this._reflect(input_vector, normal_rotate_vector);
+    var result = this._multiply4mv(camRotMat, reflect_vector);
+    result = this._normalize3(result);
+    return result;
+  },
+  _getCamRotMat: function () {
+    var camLat = this._lat;
+    var camLon = this._lon;
+    var camRot = [1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,  0, 0, 0, 1];
+    var pose = {heading: 0, pitch: 0, roll: 0};
+    if (this._poseInfo)
+      pose = this._poseInfo;;
+    camRot = this._multiply4m(this._rotateX4m(camLat), camRot);
+    camRot = this._multiply4m(this._rotateY4m(camLon), camRot)
+    camRot = this._multiply4m(this._rotateX4m(-pose.pitch), camRot);
+    return this._multiply4m(this._rotateZ4m(-pose.roll), camRot);
+  },
+  _render: function() {
+    window.requestAnimationFrame(this._render.bind(this), this._canvas);
+    if (!this._texture)
+      return;
+    this._lat = Math.max(-85, Math.min(85, this._lat));
+    if (!this._needsUpdate)
+      return;
+    this._needsUpdate = false;
+    this._gl.useProgram(this._program);
+    this._gl.viewport(0, 0, this._gl.drawingBufferWidth, this._gl.drawingBufferHeight);
+    this._gl.uniform2f(this._dispSize_loc, this._canvas.width, this._canvas.height);
+    this._gl.uniformMatrix4fv(this._camRot_loc, this._gl.FALSE, this._getCamRotMat());
+    this._gl.uniform1f(this._ballSize_loc, this._ballSize);
+    this._gl.uniform1f(this._scale_loc, this._scale);
+
+    this._gl.activeTexture(this._gl.TEXTURE0);
+    this._gl.bindTexture(this._gl.TEXTURE_2D, this._frameBufferForEdit0.t);
+    this._gl.uniform1i(this._texture0_loc, 0);
+
+    this._gl.activeTexture(this._gl.TEXTURE1);
+    this._gl.bindTexture(this._gl.TEXTURE_2D, this._frameBuffer.t);
+    this._gl.uniform1i(this._texture1_loc, 1);
+
+    this._gl.viewport(0, 0, this._gl.drawingBufferWidth, this._gl.drawingBufferHeight);
+    this._gl.drawArrays(this._gl.TRIANGLES, 0, 6);
+  }
+};
+window.addEventListener('load', init, false);
+
+function isPowOfTwo(value) {
+	return (value & (value - 1)) === 0 && value !== 0;
+}
+function nearestPowOfTwo ( value ) {
+	return Math.pow(2, Math.round(Math.log( value ) / Math.LN2));
+}
+
+
+var MenuController = function() {
+  this._edit_mode = 'medium-pt';
+  this._EDIT_MODES = ['rotate', 'small-pt', 'medium-pt', 'large-pt'];
+  this._EDIT_MODE_BUTTON_PREFIX = 'edit-';
+  this._view = undefined;
+};
+MenuController.prototype = {
+  initialize: function() {
+    this._openButton = document.getElementById("open-button");
+    this._openButton.addEventListener('click', this._onOpenButtonClick.bind(this), false);
+    this._editButton = document.getElementById("edit-mode-button");
+    this._editButton.addEventListener('click', this._onEditButtonClick.bind(this), false);
+    this._saveButton = document.getElementById("save-button");
+    this._saveButton.addEventListener('click', this._onSaveButtonClick.bind(this), false);
+  },
+  getEditMode: function(mode) {
+    return this._edit_mode;
+  },
+  setView: function(view) {
+    this._view = view;
+  },
+  _setEditMode: function(mode) {
+    this._editButton.classList.toggle(this._EDIT_MODE_BUTTON_PREFIX + this._edit_mode);
+    this._editButton.classList.toggle(this._EDIT_MODE_BUTTON_PREFIX + mode);
+    this._edit_mode = mode;
+    if (this._view) {
+      this._view.setEditMode(mode);
+    }
+  },
+  _getNextEditMode: function() {
+    for (var i = 0; i < this._EDIT_MODES.length; ++i) {
+      if (this._EDIT_MODES[i] == this._edit_mode) {
+        return this._EDIT_MODES[(i + 1) % this._EDIT_MODES.length];
+      }
+    }
+    return '';
+  },
+  _onOpenButtonClick: function() {
+    var fileInput = document.createElement('input');
+    fileInput.id = 'fileInput';
+    fileInput.type = 'file';
+    fileInput.accept = 'image/jpeg';
+    fileInput.name = 'files[]';
+    fileInput.addEventListener('change', (function () {
+        if (fileInput.files.length == 0) {
+          return;
+        }
+        this._openButton.disabled = true;
+        var img = document.createElement("img");
+        var fr_data = new FileReader();
+        fr_data.onload = (function(e) {
+          var arrayBuffer = e.target.result;
+          var poseInfo = this._getPoseInfo(arrayBuffer);
+          var blob = new Blob([arrayBuffer], {type: 'image/jpeg'});
+          img.src = URL.createObjectURL(blob);
+          if (img.complete) {
+            this._view.loadImage(img, poseInfo);
+            this._openButton.disabled = false;
+            this._editButton.disabled = false;
+            this._saveButton.disabled = false;
+            document.body.removeChild(fileInput);
+            return;
+          }
+          img.addEventListener('load', (function () {
+            this._view.loadImage(img, poseInfo);
+            this._openButton.disabled = false;
+            this._editButton.disabled = false;
+            this._saveButton.disabled = false;
+            document.body.removeChild(fileInput);
+          }).bind(this));
+        }).bind(this);
+        fr_data.onerror = (function() {
+          this._openButton.disabled = false;
+          document.body.removeChild(fileInput);
+        }).bind(this);
+        fr_data.readAsArrayBuffer(fileInput.files[0]);
+      }).bind(this), false);
+    document.body.appendChild(fileInput);
+    fileInput.click();
+  },
+  _getPoseInfo: function(arrayBuffer) {
+    var pos = 0;
+    try {
+      if (read2Bytes() != 0xFFD8)
+        return null;
+      while (pos + 4 < arrayBuffer.byteLength) {
+        var marker = read2Bytes();
+        var size = read2Bytes();
+        if (marker == 0xFFDA)
+          break;
+        if (marker == 0xFFE1) {
+          if (isXmp()) {
+            var dom = getXmp(size);
+            if (!dom)
+              return null;
+            var list = getLeafs(dom);
+            return getHadingPitchRoll(list);
+          }
+        }
+        pos += size - 2;
+      }
+    } catch (e) {
+      console.error(e.toString());
+    }
+    return null;
+
+    function read2Bytes() {
+      var bytes =  new Uint8Array(arrayBuffer, pos, 2);
+      pos += 2;
+      return bytes[0] * 0x100 + bytes[1];
+    }
+    function isXmp() {
+      var bytes = new Uint8Array(arrayBuffer, pos, 29);
+      var t = String.fromCharCode.apply(null, bytes);
+      return t == 'http://ns.adobe.com/xap/1.0/\0';
+    }
+    function getXmp(size) {
+      var xmpStr = String.fromCharCode.apply(
+          null,
+          new Uint8Array(arrayBuffer, pos + 29, size - 31));
+      var startPos = xmpStr.search('<x:xmpmeta ');
+      var endPos = xmpStr.search('</x:xmpmeta>');
+      if (startPos == -1 || endPos == -1)
+        return null;
+      xmpStr = xmpStr.substr(startPos, endPos - startPos + 12);
+      var dom = (new DOMParser()).parseFromString(
+          xmpStr, 'text/xml');
+      return dom;
+    }
+    function getLeafs(node) {
+      var list = [];
+      if (node.childNodes.length == 1 &&
+          node.childNodes[0].nodeType == 3) {
+        return [[node.nodeName, node.childNodes[0].nodeValue]];
+      }
+      for (var i = 0; i < node.childNodes.length; ++i)
+        list = list.concat(getLeafs(node.childNodes[i]));
+      return list;
+    }
+    function getHadingPitchRoll(list) {
+      var heading = 0, pitch = 0, roll = 0;
+      list.forEach(function(item) {
+        if (item[0] == 'GPano:PoseHeadingDegrees')
+          heading = item[1];
+        if (item[0] == 'GPano:PosePitchDegrees')
+          pitch = item[1];
+        if (item[0] == 'GPano:PoseRollDegrees')
+          roll = item[1];
+      });
+      return {heading: heading, pitch: pitch, roll: roll};
+    }
+  },
+  _onEditButtonClick: function() {
+    this._setEditMode(this._getNextEditMode());
+  },
+  _onSaveButtonClick: function() {
+      this._openButton.disabled = true;
+      this._editButton.disabled = true;
+      this._saveButton.disabled = true;
+      this._view.save();
+      this._openButton.disabled = false;
+      this._editButton.disabled = false;
+      this._saveButton.disabled = false;
+  }
+};
+
+function registerSW() {
+  if (!navigator.serviceWorker)
+    return;
+  var needsReload = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('./sw.js', {scope: './'})
+    .then(function(reg) {
+        if (!needsReload)
+          return;
+        reg.addEventListener('updatefound', function() {
+            var worker = reg.installing;
+            worker.addEventListener('statechange', function() {
+              if (worker.state == 'activated') {
+                console.log('new SW installed.')
+                location.reload();
+              }
+            });
+          });
+      });
+}
+
+function init() {
+  var menuController = new MenuController();
+  menuController.initialize();
+  view = new MirrorView();
+  view.initialize(menuController);
+  registerSW();
+}
+
+</script>
+<script id="vertex-shader" type="x-shader/x-vertex">// <![CDATA[
+attribute vec2 pos;
+void main() {
+  gl_Position = vec4(pos, 0, 1);
+}
+// ]]></script>
+<script id="vertex-shader-for-frame-buffer" type="x-shader/x-vertex">// <![CDATA[
+attribute vec2 pos;
+uniform float ySize;
+uniform float yBase;
+void main() {
+  gl_Position = vec4(pos.x, pos.y*ySize+ yBase, 0, 1);
+}
+// ]]></script>
+<script id="fragment-shader-for-frame-buffer" type="x-shader/x-fragment">// <![CDATA[
+#define PI 3.1415925358979
+#define PI2 6.2831850718
+precision highp float;
+uniform vec3 inputVector;
+uniform vec2 frameBufferSize;
+uniform float pointSize;
+
+uniform sampler2D cosTableTexture;
+
+vec3 rotateX(float s, float c, vec3 p){
+  return vec3(p.x, c * p.y - s * p.z, s * p.y + c * p.z);
+}
+vec3 rotateY(float s, float c, vec3 p){
+  return vec3(c * p.x + s * p.z, p.y, - s * p.x + c * p.z);
+}
+float cosX(float x) {
+  float signValue = 1.0;
+  x = abs(x) / PI;
+  x = x - floor(x / 2.0) * 2.0;
+  if (x >= 1.0) x = 2.0 - x;
+  if (x >= 0.5) {
+    x = 1.0 - x;
+    signValue = -1.0;
+  }
+  if (x < 0.001) {
+    return signValue;
+  }
+  vec4 cosColor = texture2D(cosTableTexture, vec2(x/0.5, 0.0));
+  float value = cosColor.r +
+                cosColor.g / 256.0 +
+                cosColor.b / 65536.0;
+  return signValue * value;
+}
+float sinX(float x) {
+  return cosX(x - PI / 2.0);
+}
+void main() {
+  float lon = (gl_FragCoord.x / frameBufferSize.x - 0.5) * PI2;
+  float lat = (- gl_FragCoord.y / frameBufferSize.y + 0.5) * PI;
+  vec3 pos_vec = rotateY(sinX(lon), cosX(lon), rotateX(sinX(-lat), cosX(-lat), vec3(0.0, 0.0, 1.0)));
+  if (dot(inputVector, pos_vec) > 0.0 &&
+      distance(pos_vec, inputVector) < pointSize) {
+    gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0);
+  } else  {
+    gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0);
+  }
+}
+// ]]></script>
+blure
+<script id="blur-fragment-shader" type="x-shader/x-fragment">// <![CDATA[
+precision highp float;
+uniform sampler2D blurTextureOrg;
+uniform sampler2D blurFilterTexture;
+uniform vec2 blurFrameBufferSize;
+uniform int blurMode;
+void main() {
+  vec3 col = vec3(0.0);
+  if (blurMode == 0) {
+    gl_FragColor = texture2D(blurTextureOrg, gl_FragCoord.xy/ blurFrameBufferSize.xy);
+  } else if (blurMode == 1) {
+    for(int i = -15 ; i <= 15 ; i++) {
+      col += texture2D(blurTextureOrg, (gl_FragCoord.xy + vec2(0.0, float(i))) / blurFrameBufferSize.xy).rgb / 31.0;
+    }
+    gl_FragColor = vec4(col, 1.0);
+  } else if (blurMode == 2) {
+    vec2 texPos = gl_FragCoord.xy/ blurFrameBufferSize.xy;
+    for(int i = -15 ; i <= 15 ; i++) {
+      col += texture2D(blurTextureOrg, (gl_FragCoord.xy + vec2(float(i), 0.0)) / blurFrameBufferSize.xy).rgb / 31.0;
+    }
+    gl_FragColor = vec4(col, sign(texture2D(blurFilterTexture, texPos).r));
+  }
+}
+// ]]></script>
+
+<script id="fragment-shader" type="x-shader/x-fragment">// <![CDATA[
+#define PI 3.1415925358979
+#define PI2 6.2831850718
+precision highp float;
+
+uniform mat4 camRot;
+
+uniform float ballSize;
+uniform float scale;
+
+uniform sampler2D texture0;
+uniform sampler2D texture1;
+uniform vec2 dispSize;
+
+vec3 rotateZ(float s, float c, vec3 p){
+  return vec3(c * p.x - s * p.y, s * p.x + c * p.y, p.z);
+}
+void main() {
+  vec2 v;
+  v = vec2((gl_FragCoord.x - 0.5*dispSize.x) / (dispSize.y * scale), (gl_FragCoord.y - 0.5 * dispSize.y)/ (dispSize.y * scale));
+  float v2;
+  v2 = v.x * v.x + v.y * v.y;
+  if (v2 > ballSize / (1.0 - ballSize)) {
+    gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+    return;
+  }
+  float v_size = length(v);
+  float tmp = sqrt(ballSize + ballSize * v2 - v2);
+  vec2 normal_pos = normalize(v);
+  vec3 normal_vector = normalize(vec3(v_size * (1.0 - tmp), 0.0, tmp + v2));
+  vec3 normal_rotate_vector = rotateZ(normal_pos.y, normal_pos.x, normal_vector);
+  vec3 input_vector = vec3(v.x, v.y, -1.0);
+  vec3 reflect_vector = reflect(input_vector, normal_rotate_vector);
+  vec4 result = camRot * vec4(reflect_vector, 0);
+  float lon = atan(result.x, result.z);
+  float lat = atan(result.y, length(vec3(result.x, 0, result.z)));
+  vec2 texPos = vec2(lon / PI2 + 0.5, - lat / PI + 0.5);
+  vec4 overlayColor = texture2D(texture1, texPos);
+  if (overlayColor.r == 1.0) {
+    vec4 origColor = texture2D(texture0, texPos);
+    gl_FragColor =  vec4(1.0 - origColor.r, 0.0, 0.0, 1.0);
+  } else {
+    gl_FragColor = texture2D(texture0, texPos);
+  }
+}
+// ]]></script>
+<script>
+if (location.href.substr(0, 23) == 'https://sphereblur.com/'){
+  (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+  (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+  m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+  })(window,document,'script','//www.google-analytics.com/analytics.js','ga');
+
+  ga('create', 'UA-72506973-1', 'auto');
+  ga('send', 'pageview');
+}
+</script>
+</head>
+<div id="menu">
+  <button id="open-button" class="button"></button>
+  <button id="edit-mode-button" class="button edit-medium-pt" disabled></button>
+  <button id="save-button" class="button" disabled></button>
+</div>
+<div id="container"></div>
+</body>
+</html>

@@ -1,0 +1,35 @@
+application: sphereblur
+version: 1
+runtime: python27
+api_version: 1
+threadsafe: yes
+default_expiration: 0s
+
+handlers:
+- url: /
+  static_files: index.html
+  upload: index.html
+  secure: always
+- url: /favicon\.ico
+  static_files: favicon.ico
+  upload: favicon\.ico
+- url: /img
+  static_dir: img
+  secure: always
+  expiration: 7d
+- url: /manifest\.json
+  static_files: manifest.json
+  upload: manifest\.json
+  secure: always
+- url: /sw\.js
+  static_files: sw.js
+  upload: sw\.js
+  secure: always
+- url: /sw_main\.js
+  static_files: sw_main.js
+  upload: sw_main\.js
+  secure: always
+- url: /jpeg_encoder_basic\.js
+  static_files: jpeg_encoder_basic.js
+  upload: jpeg_encoder_basic\.js
+  secure: always
